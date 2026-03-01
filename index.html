@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>Demo Switch (github.io × Node-RED)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <style>
+    :root{
+      --bg: #0b0c0f; --fg: #e9eef5; --muted:#9aa4b2;
+      --card:#151922; --ok:#25b36a; --ng:#ef5350; --btn:#2563eb; --btn2:#334155;
+      --border:#273245; --warn:#f59e0b;
+    }
+    @media (prefers-color-scheme: light) {
+      :root{ --bg:#f7f8fb; --fg:#0b1220; --muted:#5b6573; --card:#ffffff; --border:#e5e9f0; }
+    }
+    html,body{ height:100%; }
+    body{
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", "Yu Gothic", "Meiryo", sans-serif;
+      background:var(--bg); color:var(--fg);
+      display:grid; place-items:center;
+    }
+    .wrap{ width:min(920px, 92vw); padding:24px; }
+    .card{
+      background:var(--card); border:1px solid var(--border);
+      border-radius:16px; padding:24px; box-shadow: 0 10px 30px rgba(0,0,0,.15);
+    }
+    h1{ margin:0 0 4px; font-size:clamp(20px, 3.8vw, 28px); }
+    .sub{ color:var(--muted); margin:0 0 18px; font-size:14px;}
+    .row{ display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+    .state{
+      font-weight:700; font-size:clamp(20px, 3.6vw, 28px);
+      padding:10px 14px; border-radius:12px; border:1px dashed var(--border);
+      min-width:160px; text-align:center;
+    }
+    .on{ color:var(--ok); } .off{ color:var(--ng); } .unknown{ color:var(--warn); }
+    button{
+      appearance:none; border:1px solid var(--border); border-radius:12px;
+      padding:10px 16px; cursor:pointer; font-size:16px; font-weight:600;
+      transition: transform .02s ease, background .2s ease, border-color .2s ease;
+      color:#fff;
+    }
+    .b-on{ background:linear-gradient(180deg, #26c281, #16a06b); }
+    .b-off{ background:linear-gradient(180deg, #ef5350, #d64545); }
+    .b-refresh{ background:linear-gradient(180deg, #3b82f6, #2563eb); }
+    button:active{ transform: translateY(1px); }
+    .msg{ margin-top:10px; color:var(--muted); min-height:1.4em; }
+    .grid{ display:grid; grid-template-columns:1.2fr .8fr; gap:18px; }
+    @media (max-width: 720px){ .grid{ grid-template-columns:1fr; } }
+    pre{
+      margin:0; background: #0a0d12; color:#d8e3f5; border-radius:12px; padding:12px; overflow:auto;
+      border:1px solid var(--border);
+    }
+    a { color:#8ab4ff; }
+    .foot{ margin-top:24px; font-size:12px; color:var(--muted); text-align:right; }
+    .muted{ color:var(--muted); }
+    .pill{ font:inherit; padding:.2em .6em; border-radius:999px; border:1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Demo Switch</h1>
+      <p class="sub">GitHub Pages（静的UI） + Node‑RED（API）で ON/OFF を切り替えるデモ</p>
+
+      <div class="grid">
+        <!-- 左：操作と現在状態 -->
+        <section>
+          <div class="row" style="margin-bottom:10px;">
+            <div id="stateBox" class="state unknown">状態: <span id="stateText">UNKNOWN</span></div>
+            <button id="btnOn"  class="b-on">ON にする</button>
+            <button id="btnOff" class="b-off">OFF にする</button>
+            <button id="btnRef" class="b-refresh" title="再取得">再読込</button>
+          </div>
+          <div id="msg" class="msg">UI→Node‑REDへ POST → Node‑RED が GitHub API で <code>data/state.json</code> を更新 → このUIが再読込で反映</div>
+        </section>
+
+        <!-- 右：現在の JSON（読み取り専用で表示） -->
+        <section>
+          <div class="row" style="justify-content:space-between; margin-bottom:6px;">
+            <div class="muted">state.json（読み取り）</div>
+            <span class="pill" id="fetchTime">—</span>
+          </div>
+          <pre id="jsonView">{ "switch": "..." }</pre>
+        </section>
+      </div>
+
+      <div class="foot">
+        <span class="muted">Powered by github.io × Node‑RED</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ======= 設定（あなたの環境に合わせて変更）=========================
+    // GitHub Pages上のJSON。配置は repo_root/data/state.json
+    const STATE_URL = "./data/state.json";
+
+    // ★ここを“あなたのNode‑REDのHTTP In URL”に変えてください。
+    // 例: const API_URL = "https://nrgw30.example.com/api/switch";
+    // 例: const API_URL = "https://<your-tunnel-or-domain>/api/switch";
+    const API_URL   = "https://YOUR-NODERED-HOST/api/switch";
+
+    // フェッチ間隔（ミリ秒）
+    const POLL_MS = 5000;
+    // ====================================================================
+
+    const $ = (id)=>document.getElementById(id);
+    const ui = {
+      stateBox: $("stateBox"),
+      stateText:$("stateText"),
+      msg:      $("msg"),
+      jsonView: $("jsonView"),
+      fetchTime:$("fetchTime"),
+      btnOn:    $("btnOn"),
+      btnOff:   $("btnOff"),
+      btnRef:   $("btnRef"),
+    };
+
+    function setMessage(t, isError=false){
+      ui.msg.textContent = t || "";
+      ui.msg.style.color = isError ? "#ef5350" : "var(--muted)";
+    }
+    function renderState(s){
+      ui.stateText.textContent = s || "UNKNOWN";
+      ui.stateBox.classList.remove("on","off","unknown");
+      ui.stateBox.classList.add(
+        s==="ON" ? "on" : (s==="OFF" ? "off" : "unknown")
+      );
+    }
+    function renderJson(obj){
+      ui.jsonView.textContent = JSON.stringify(obj, null, 2);
+      ui.fetchTime.textContent = new Date().toLocaleString();
+    }
+
+    async function loadState(){
+      try{
+        setMessage("取得中…");
+        const res = await fetch(STATE_URL + "?t="+Date.now(), { cache:"no-store" });
+        if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        const j = await res.json();
+        renderState(j.switch);
+        renderJson(j);
+        setMessage("OK");
+      }catch(e){
+        renderState("UNKNOWN");
+        setMessage("state.json の取得に失敗: " + e.message, true);
+      }
+    }
+
+    async function sendSwitch(target){
+      try{
+        setMessage(`送信中… (${target})`);
+        const res = await fetch(API_URL, {
+          method:"POST",
+          headers:{ "Content-Type":"application/json" },
+          body: JSON.stringify({ switch: target })
+        });
+        if(!res.ok){
+          const txt = await res.text().catch(()=> "");
+          throw new Error(`HTTP ${res.status} ${txt}`);
+        }
+        // Node‑REDが GitHub の state.json を更新 → 少し待って再取得
+        setTimeout(loadState, 800);
+        setMessage("OK");
+      }catch(e){
+        setMessage("送信に失敗: " + e.message, true);
+      }
+    }
+
+    ui.btnOn.onclick  = () => sendSwitch("ON");
+    ui.btnOff.onclick = () => sendSwitch("OFF");
+    ui.btnRef.onclick = () => loadState();
+
+    // 初期読み取り & ポーリング
+    loadState();
+    setInterval(loadState, POLL_MS);
+  </script>
+</body>
+</html>
